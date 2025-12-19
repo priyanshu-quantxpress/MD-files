@@ -161,7 +161,8 @@ Example naming rules:
 - One script should handle **one file type only**
 
 
-![Process Master File](images/utils.png)
+![utils](https://raw.githubusercontent.com/priyanshu-quantxpress/MD-files/main/images/utils.png)
+
 
 > New script added inside utils folder
 
@@ -347,7 +348,8 @@ If this step is skipped, the new process will not appear.
 
 You should see the new process listed.
 
-📸 **Screenshot Placeholder**  
+![AdminUI](https://raw.githubusercontent.com/priyanshu-quantxpress/MD-files/main/images/AdminUI.png)
+
 > UI showing the BOD process list
 
 ---
@@ -370,7 +372,9 @@ If anything looks wrong, stop and fix `process.json`.
 - Ensure the process runs at the expected time
 - Confirm it completes successfully
 
-📸 **Screenshot Placeholder**  
+![RunBOD_EOD](https://raw.githubusercontent.com/priyanshu-quantxpress/MD-files/main/images/RunBOD_EOD.png)
+
+
 > UI showing successful execution of the new process
 
 ---
