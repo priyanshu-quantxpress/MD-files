@@ -131,6 +131,183 @@ This file lists all required dependencies for the project.
 
 
 
+### 📄 Script: download_nse_most_active_scripts.py
+
+**Purpose:**  
+Fetches NSE most active / variation data in CSV format and stores it in Redis.
+This data is primarily used for quick access by UI dashboards or analytical components
+without repeatedly calling NSE APIs during the trading day.
+
+**Input:**  
+- NSE public API endpoint (CSV response)
+- Redis host and port (via arguments)
+
+**Output:**  
+- Raw CSV data stored in Redis under a fixed key (`NSE_MA`)
+
+**Dependency:**  
+- Redis service must be running  
+- Internet connectivity required  
+- No dependency on other BOD scripts
+
+---
+
+### 📄 Script: nse_span_downloader.py
+
+**Purpose:**  
+Downloads NSE F&O SPAN margin files for the given trading day.
+The script intelligently attempts multiple intraday versions (i5 → i1 → settlement)
+and automatically selects the first available valid file.
+
+This ensures that the most recent SPAN margin data is always used for downstream
+risk and margin calculations.
+
+**Input:**  
+- NSE SPAN archive URLs  
+- Optional trading date (defaults to current date)
+
+**Output:**  
+- Extracted SPAN file saved in the downloads directory  
+- File renamed to a consistent name for downstream scripts
+
+**Dependency:**  
+- Internet connectivity  
+- Should run before margin upload or RMS-related processes
+
+---
+
+### 📄 Script: ftp_downloader.py
+
+**Purpose:**  
+Acts as a generic FTP utility to download files from external systems
+that provide data only via FTP access.
+This script is reusable across multiple BOD/EOD flows.
+
+**Input:**  
+- FTP host address  
+- FTP username and password  
+- Remote file path on FTP server
+
+**Output:**  
+- File downloaded and saved to a specified local destination path
+
+**Dependency:**  
+- FTP server availability  
+- Correct credentials  
+- No dependency on other scripts
+
+---
+
+### 📄 Script: process_monitor.py
+
+**Purpose:**  
+Continuously monitors the health of configured BOD/EOD processes.
+Tracks CPU usage, memory usage, process uptime, and execution state,
+and pushes this information to Redis for real-time UI visibility.
+
+If a configured process is not running, the script can trigger
+email alerts to notify administrators.
+
+**Input:**  
+- Process list defined in `Processes.json`  
+- System process information  
+- Docker container stats (if applicable)
+
+**Output:**  
+- Live process status data stored in Redis  
+- Email alerts for non-running processes
+
+**Dependency:**  
+- Redis service must be running  
+- Email configuration must be valid  
+- Runs independently of BOD execution timing
+
+---
+
+### 📄 Script: redis_cache_backup_and_deletion.py
+
+**Purpose:**  
+Safely backs up Redis cache data before clearing it.
+This ensures that stale or previous-day data does not interfere
+with the current BOD run while still allowing recovery if needed.
+
+The script supports backing up multiple Redis data types
+(strings, lists, hashes, sets, sorted sets).
+
+**Input:**  
+- Redis host, port, and optional password  
+- Redis key pattern to back up and delete
+
+**Output:**  
+- Redis backup file stored in a backup directory  
+- Redis cache cleared for the specified key pattern
+
+**Dependency:**  
+- Redis service must be running  
+- Typically executed before core BOD processes start
+
+---
+
+### 📄 Script: store_adapter_info.py
+
+**Purpose:**  
+Reads adapter configuration INI files, converts them into JSON format,
+and stores adapter configuration details in Redis.
+This allows adapter-level configuration to be accessed dynamically
+at runtime by other services.
+
+**Input:**  
+- Directory containing `*AdapterInfo.ini` files  
+- Redis connection details
+
+**Output:**  
+- Adapter configuration stored in Redis using adapter ID–based keys
+
+**Dependency:**  
+- Redis service must be running  
+- Adapter configuration files must exist before execution
+
+---
+
+### 📄 Script: upload_cash_margin_db.py
+
+**Purpose:**  
+Parses daily cash margin files received from upstream systems
+and updates RMS cash margin values in the database.
+The script supports multiple input formats to handle vendor variations.
+
+**Input:**  
+- Cash margin file (pipe-separated or header-based format)  
+- Database connection parameters
+
+**Output:**  
+- Updated cash margin values in RMS-related database tables
+
+**Dependency:**  
+- Database must be accessible  
+- Must run after the cash margin file is available locally
+
+---
+
+### 📄 Script: upolad_holding_position_db.py
+
+**Purpose:**  
+Parses daily client holding position files, enriches them using
+instrument master data, and updates the Holdings table in the database.
+This data forms the base for portfolio valuation and exposure calculations.
+
+**Input:**  
+- Holding position file (CSV / Excel / pipe-separated)  
+- Instrument master file  
+- Database connection parameters
+
+**Output:**  
+- Holdings table created or updated with latest client positions
+
+**Dependency:**  
+- Instrument master data must be available  
+- Database connectivity required  
+- Should run after instrument and holding files are prepared
 
 
 
