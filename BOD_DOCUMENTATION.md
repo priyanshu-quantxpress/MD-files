@@ -130,6 +130,7 @@ This file lists all required dependencies for the project.
 - Existing scripts rely on this file to work consistently
 
 
+## 1.3 Script Responsibilities (Purpose, Input, Output & Dependencies)
 
 ### 📄 Script: download_nse_most_active_scripts.py
 
