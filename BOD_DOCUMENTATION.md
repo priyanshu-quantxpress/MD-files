@@ -134,185 +134,584 @@ This file lists all required dependencies for the project.
 
 ### 📄 Script: download_nse_most_active_scripts.py
 
-**Purpose:**  
-Fetches NSE most active / variation data in CSV format and stores it in Redis.
-This data is primarily used for quick access by UI dashboards or analytical components
-without repeatedly calling NSE APIs during the trading day.
+`copy_files_src_dst.py` is a **foundational pre-processing script** in the BOD workflow.
+Its sole responsibility is to **guarantee the availability of input files and directories**
+at the correct locations **before any downstream processing begins**.
 
-**Input:**  
-- NSE public API endpoint (CSV response)
-- Redis host and port (via arguments)
+In a production BOD system, the most frequent causes of failure are not code issues,
+but operational issues such as:
+- input files arriving late or in unexpected locations
+- files being required by multiple downstream processes
+- partial or inconsistent file availability
 
-**Output:**  
-- Raw CSV data stored in Redis under a fixed key (`NSE_MA`)
+This script is designed to **isolate and eliminate these risks** by acting as a
+**gatekeeper for file availability**.
 
-**Dependency:**  
-- Redis service must be running  
-- Internet connectivity required  
-- No dependency on other BOD scripts
+### 📄 Script: db_backup.py
+
+`db_backup.py` is a **critical safety and risk-mitigation script** in the BOD workflow.
+Its primary purpose is to create a **consistent, recoverable backup of the database**
+*before any BOD process modifies data*.
+
+In production BOD systems, data corruption or partial updates can occur due to:
+- unexpected script failures
+- incorrect input data
+- infrastructure or network issues
+
+This script ensures that a **known-good database state** is always available for recovery
+in case any downstream BOD step fails.
+
+> 🔒 This script must always run **before** any database-modifying BOD scripts.
+---
+
+### 2️⃣ Execution Context
+
+The script is designed as a **standalone command-line utility** and can be executed in two ways:
+
+- Automatically by `process_master.py` during the BOD startup phase
+- Manually by operations or developers for emergency or ad-hoc backups
+
+The script performs **read-only operations** on the database and does not depend on
+any external application state.
 
 ---
 
-### 📄 Script: nse_span_downloader.py
+`docker exec <mysql_container> mysqldump ...`
 
-**Purpose:**  
-Downloads NSE F&O SPAN margin files for the given trading day.
-The script intelligently attempts multiple intraday versions (i5 → i1 → settlement)
-and automatically selects the first available valid file.
+3️⃣ Runtime Dependencies
 
-This ensures that the most recent SPAN margin data is always used for downstream
-risk and margin calculations.
+#### 3.1 System-Level Dependencies
 
-**Input:**  
-- NSE SPAN archive URLs  
-- Optional trading date (defaults to current date)
+The following must be available at runtime:
 
-**Output:**  
-- Extracted SPAN file saved in the downloads directory  
-- File renamed to a consistent name for downstream scripts
+- Docker installed and running
+- MySQL Docker container running
+- `mysqldump` available inside the container
+- `gzip` available for compression
 
-**Dependency:**  
-- Internet connectivity  
-- Should run before margin upload or RMS-related processes
+If any of these dependencies are missing, the script will fail.
+
+#### 3.2 Python Dependencies
+
+The script uses only Python standard library modules:
+
+- `os` – directory validation and file handling
+- `subprocess` – command execution and piping
+- `datetime` – timestamp generation
+- `sys` – platform checks
+- `argparse` – command-line argument parsing
+
+  #### Required Arguments
+- `--user` : MySQL username  
+- `--password` : MySQL password  
+- `--database` : Database name (ignored if `--all-databases` is used)  
+- `--output_dir` : Directory where backup files are stored  
+
+- `--host` (default: `localhost`)
+- `--port` (default: `3306`)
+- `--all-databases` : Backup all databases instead of a single database
+- `--no_compress` : Disable gzip compression
+- `--mysql_container_name` (default: `blitz_mysql`)
+---
+### 📄 Script: db_backup.py
+
+## 1️⃣ Purpose and Design Intent
+
+`db_clean.py` is a **database preparation and hygiene script** executed during the early
+phase of the BOD workflow.  
+Its primary responsibility is to ensure that the database is in a **clean, predictable state**
+before fresh BOD data is loaded.
+
+Unlike a full database reset, this script supports **two controlled cleanup strategies**:
+1. **Hard cleanup (TRUNCATE)** – permanently removes all data from selected tables
+2. **Soft cleanup (DELETE WHERE IsDeleted = TRUE)** – removes logically deleted rows only
+
+This dual-mode design allows the system to:
+- preserve important reference or configuration data
+- safely remove stale or transient records from previous runs
+- avoid unintended data loss
+
+> This script must always run **after `db_backup.py`**  
+>  This script must run **before any data ingestion or upload scripts**
+
+### 2️⃣ Execution Context
+
+The script is implemented as a **standalone command-line utility** and can be executed:
+
+- Automatically by `process_master.py` as part of the BOD flow
+- Manually by operations or developers for controlled database cleanup
+
+The script performs **write operations** on the database and therefore must be treated
+as a **high-impact script**.
+### 3️⃣ Runtime Dependencies
+
+#### 3.1 System and Environment Dependencies
+
+- MySQL database must be running and accessible
+- Network connectivity to the database host
+- Sufficient privileges to:
+  - TRUNCATE tables
+  - DELETE rows
+  - READ table metadata
 
 ---
 
-### 📄 Script: ftp_downloader.py
+#### 3.2 Python Dependencies
 
-**Purpose:**  
-Acts as a generic FTP utility to download files from external systems
-that provide data only via FTP access.
-This script is reusable across multiple BOD/EOD flows.
+This script depends on:
 
-**Input:**  
-- FTP host address  
-- FTP username and password  
-- Remote file path on FTP server
+- `mysql-connector-python`  
+  (must be installed via `pip install mysql-connector-python`)
 
-**Output:**  
-- File downloaded and saved to a specified local destination path
+Standard library modules:
+- `argparse` – command-line argument parsing
 
-**Dependency:**  
-- FTP server availability  
-- Correct credentials  
-- No dependency on other scripts
+4️⃣ Input Contract (Command-Line Arguments)
 
----
+The script relies entirely on explicit command-line inputs.
 
-### 📄 Script: process_monitor.py
+#### Required Arguments
+- `--user` : Database username  
+- `--password` : Database password  
+- `--database` : Database name  
+- `--host` (default: `localhost`)
+- `--port` (default: `3306`)
+- `--tables`
+- `--blitz_server` (currently informational)
 
-**Purpose:**  
-Continuously monitors the health of configured BOD/EOD processes.
-Tracks CPU usage, memory usage, process uptime, and execution state,
-and pushes this information to Redis for real-time UI visibility.
 
-If a configured process is not running, the script can trigger
-email alerts to notify administrators.
+## 📄 Script : download_and_process_bhavcopy.py
+`download_and_process_bhavcopy.py` is a **core market data ingestion script** in the BOD workflow.
+Its primary responsibility is to **download, extract, validate, and process daily NSE Bhavcopy data**
+and make it available for downstream analytics, reporting, and trading-related processes.
 
-**Input:**  
-- Process list defined in `Processes.json`  
-- System process information  
-- Docker container stats (if applicable)
+This script acts as the **single source of truth for daily market reference data**, including:
+- Cash Market (CM) equity prices
+- Futures & Options (FO) contract data
+- Index OHLC data (e.g., NIFTY 50, BANK NIFTY)
 
-**Output:**  
-- Live process status data stored in Redis  
-- Email alerts for non-running processes
+>  This script should be executed **after market close**  
+>  Downstream systems rely on the correctness of this data
 
-**Dependency:**  
-- Redis service must be running  
-- Email configuration must be valid  
-- Runs independently of BOD execution timing
+### 2️⃣ Data Sources (From Where the Files Are Downloaded)
+
+This script downloads data **only from official NSE-controlled endpoints**.
+No third-party or intermediary data providers are used.
 
 ---
 
-### 📄 Script: redis_cache_backup_and_deletion.py
+#### 2.1 NSE Bhavcopy Files (CM & FO)
 
-**Purpose:**  
-Safely backs up Redis cache data before clearing it.
-This ensures that stale or previous-day data does not interfere
-with the current BOD run while still allowing recovery if needed.
+**Primary domain:**
+[https://nsearchives.nseindia.com](https://nsearchives.nseindia.com)
+#####  Cash Market (CM) Bhavcopy
+[https://nsearchives.nseindia.com/content/cm/](https://nsearchives.nseindia.com/content/cm/)
+`BhavCopy_NSE_CM_0_0_0_<YYYYMMDD>_F_0000.csv.zip`
 
-The script supports backing up multiple Redis data types
-(strings, lists, hashes, sets, sorted sets).
 
-**Input:**  
-- Redis host, port, and optional password  
-- Redis key pattern to back up and delete
-
-**Output:**  
-- Redis backup file stored in a backup directory  
-- Redis cache cleared for the specified key pattern
-
-**Dependency:**  
-- Redis service must be running  
-- Typically executed before core BOD processes start
+**URL pattern:**
+**Contains:**
+- Equity OHLC prices
+- Traded volume and value
+- Settlement prices
 
 ---
 
-### 📄 Script: store_adapter_info.py
+##### 📌 Futures & Options (FO) Bhavcopy
 
-**Purpose:**  
-Reads adapter configuration INI files, converts them into JSON format,
-and stores adapter configuration details in Redis.
-This allows adapter-level configuration to be accessed dynamically
-at runtime by other services.
+**URL pattern:**
+[https://nsearchives.nseindia.com/content/fo/](https://nsearchives.nseindia.com/content/fo/)
+`BhavCopy_NSE_FO_0_0_0_<YYYYMMDD>_F_0000.csv.zip`
 
-**Input:**  
-- Directory containing `*AdapterInfo.ini` files  
-- Redis connection details
-
-**Output:**  
-- Adapter configuration stored in Redis using adapter ID–based keys
-
-**Dependency:**  
-- Redis service must be running  
-- Adapter configuration files must exist before execution
+**Contains:**
+- Futures and Options contracts
+- Expiry dates, strike prices
+- Volume, Open Interest, settlement prices
 
 ---
 
-### 📄 Script: upload_cash_margin_db.py
+#### 2.2 Index OHLC Data
 
-**Purpose:**  
-Parses daily cash margin files received from upstream systems
-and updates RMS cash margin values in the database.
-The script supports multiple input formats to handle vendor variations.
+Index data is fetched using an NSE-backed API hosted on:
+[https://www.niftyindices.com](https://www.niftyindices.com)
+**API Endpoint:**
+[https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString](https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString)
+### 3️⃣ Execution Context
 
-**Input:**  
-- Cash margin file (pipe-separated or header-based format)  
-- Database connection parameters
+The script is designed as a **standalone executable utility** and can be run:
 
-**Output:**  
-- Updated cash margin values in RMS-related database tables
+- Automatically via `process_master.py` during BOD
+- Manually for validation, reprocessing, or historical backfill
 
-**Dependency:**  
-- Database must be accessible  
-- Must run after the cash margin file is available locally
+The script performs **both network I/O and database writes**, making it a **high-impact script**.
+
+---
+### 4️⃣ Runtime Dependencies
+The script depends on **live availability of official NSE services**.
+
+Mandatory external endpoints:
+- `https://nsearchives.nseindia.com`  
+  (For CM & FO Bhavcopy ZIP files)
+- `https://www.niftyindices.com`  
+  (For index OHLC data API)
+
+SE enforces request filtering and anti-bot mechanisms.
+
+The script **explicitly depends on**:
+- Valid `User-Agent` header
+- Valid `Referer: https://www.nseindia.com/`
+- Persistent HTTP session usage
+
+If headers are modified or removed:
+- NSE may return HTTP 403 / 401
+- Download will fail even if URL is correct
+
+### 5️⃣ Failure Handling and Edge Cases
+
+#### Common Failure Scenarios
+- NSE endpoint unavailable
+- Bhavcopy not yet published for the day
+- Partial or corrupt ZIP downloads
+- CSV format changes
+- Database connectivity issues
+
+#### Failure Behavior
+- Script logs detailed error messages
+- Processing stops on critical failures
+- No partial database writes are committed
+
+This ensures **data integrity and consistency**.
+
+---
+## 📄 Script: download_banned_instruements.py
+### 1️⃣ Purpose and Design Intent
+
+`download_banned_instruements.py` is a **regulatory compliance and risk-control script**
+executed as part of the BOD workflow.
+
+Its primary responsibility is to:
+- Download the **official NSE list of banned F&O instruments**
+- Persist the data into the internal database
+- Ensure the trading system is aware of instruments that must be blocked
+
+This script directly supports **exchange compliance**, **risk management**, and
+**order validation logic**.
+
+> 🔒 If this script is skipped or fails, the system may allow trading
+> in instruments that are officially banned by the exchange.
+
+---
+### 2️⃣ Data Source (From Where the File Is Downloaded)
+
+The script downloads data **directly from an official NSE archive endpoint**.
+
+#### 📥 Source URL
+[https://nsearchives.nseindia.com/content/fo/fo_secban.csv](https://nsearchives.nseindia.com/content/fo/fo_secban.csv)
+#### 📄 File Description
+- File Name: `fo_secban.csv`
+- Published by: **National Stock Exchange (NSE)**
+- Update Frequency: Daily (post exchange updates)
+- Content Type: CSV
+
+#### 📌 File Contents
+| Column | Description |
+|-----|-------------|
+| Index | Row index (not used in DB) |
+| Symbol | Trading symbol banned by NSE |
+
+This file represents the **authoritative list** of banned F&O instruments.
 
 ---
 
-### 📄 Script: upolad_holding_position_db.py
+### 3️⃣ Execution Context
 
-**Purpose:**  
-Parses daily client holding position files, enriches them using
-instrument master data, and updates the Holdings table in the database.
-This data forms the base for portfolio valuation and exposure calculations.
+The script is implemented as a **standalone CLI utility** and is executed:
 
-**Input:**  
-- Holding position file (CSV / Excel / pipe-separated)  
-- Instrument master file  
-- Database connection parameters
+- Automatically via `process_master.py` during BOD
+- Manually for validation or recovery
 
-**Output:**  
-- Holdings table created or updated with latest client positions
+The script performs **both network I/O and database writes**, making it
+**high-impact and non-optional** in the BOD flow.
 
-**Dependency:**  
-- Instrument master data must be available  
-- Database connectivity required  
-- Should run after instrument and holding files are prepared
+---
+### 4️⃣ Genuine Runtime Dependencies (Actual & Enforced)
+
+This script has **hard, non-negotiable dependencies** that must be satisfied.
+
+---
+
+#### 4.1 External Network Dependencies
+
+- Internet connectivity must be available
+- NSE archive endpoint must be reachable:
+
+[https://nsearchives.nseindia.com](https://nsearchives.nseindia.com)
+- Host IP must not be blocked by NSE
+
+The script depends on:
+- A valid `User-Agent` header
+- Direct HTTP GET access
+
+If NSE blocks the request:
+- HTTP 403 / 401 is returned
+- Script fails immediately
+
+---
+#### 4.3 Database Dependencies (Hard Requirement)
+
+The script performs **direct INSERT operations** into MySQL.
+
+Required conditions:
+- MySQL server must be running
+- Database must be reachable
+- Target database must exist
+- Table `BannedInstruments` must exist
+- DB user must have `INSERT` privilege
+
+Expected table schema (minimum):
+```sql
+BannedInstruments(
+Symbol VARCHAR(...),
+Reason VARCHAR(...),
+IsBanned BOOLEAN,
+IsUserCreated BOOLEAN
+)
+If table or privileges are missing:
+
+Script fails during insertion
+
+No fallback logic exists
+```
+
+## 📄 Script Deep Dive: download_bse_contract_master.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`download_bse_contract_master.py` is a **reference data acquisition script**
+used in the BOD workflow to download and prepare **BSE contract master files**
+required for instrument mapping and downstream processing.
+
+Its primary responsibility is to:
+- Download **official contract reference files** from BSE
+- Extract and normalize filenames into **fixed, predictable names**
+- Ensure downstream scripts can consume BSE reference data
+  without handling date-based filenames
+
+This script does **not** parse or load data into the database.
+It strictly prepares **clean, standardized input files**.
+
+---
+
+### 2️⃣ Authoritative Data Sources (From Where the Files Are Downloaded)
+
+All data is downloaded **directly from official BSE-controlled endpoints**.
+
+#### 📥 Source 1: SCRIP Master File
+
+**URL:**
+[https://www.bseindia.com/downloads/Help/file/scrip.zip](https://www.bseindia.com/downloads/Help/file/scrip.zip)
 
 
+**Provided by:**  
+:contentReference[oaicite:1]{index=1}
 
-## 1.3 First Step: Writing a New File-Parsing Script
+**Contents after extraction:**
+- Folder: `SCRIP/`
+- File pattern:
+SCRIP_<ddMMyy>.TXT
+
+
+This file contains **BSE instrument reference data**
+(e.g. scrip codes, symbols, ISINs).
+
+---
+
+#### 📥 Source 2: EQD (Equity Details) File
+
+**URL:**
+
+
+[https://www.bseindia.com/downloads1/CO_BSE.zip](https://www.bseindia.com/downloads1/CO_BSE.zip)
+**Contents after extraction:**
+- File pattern:
+EQD_CO<ddMMyy>.csv
+
+yaml
+Copy code
+
+This file contains **BSE equity master information**
+used for equity-level mapping.
+
+---
+
+### 3️⃣ Execution Context
+
+The script is implemented as a **standalone CLI utility** and is executed:
+
+- Automatically via `process_master.py` during BOD
+- Manually for recovery, testing, or file regeneration
+
+The script performs:
+- External network downloads
+- ZIP extraction
+- File renaming and movement
+
+It does **not**:
+- Modify databases
+- Touch Redis
+- Depend on other BOD scripts
+
+---
+
+### 4️⃣ Date Resolution Logic (Important)
+
+The script resolves filenames using:
+current_date - 1 day
+
+yaml
+Copy code
+
+Reason:
+- BSE publishes contract files **with previous trading date**
+- Running the script on the same day before file publication
+  would result in missing files
+
+⚠️ This introduces a **time dependency**:
+- Script should be run **after BSE publishes files**
+- Weekend / holiday execution may require manual verification
+
+---
+
+### 5️⃣ Failure Handling and Edge Cases
+
+#### 5.1 BSE Endpoint Unavailable
+- HTTP request fails
+- Script exits with non-zero code
+- No files prepared
+
+---
+
+#### 5.2 ZIP Downloaded but Not a Valid ZIP
+- Script checks `zipfile.is_zipfile`
+- If invalid, extraction is skipped
+- Downstream file rename fails
+
+---
+
+#### 5.3 Date-Based File Not Found
+- Expected dated file does not exist
+- Rename step is skipped silently
+- Output files (`SCRIP.TXT`, `EQD.csv`) are missing
+
+This may break downstream consumers.
+
+`download_bse_contract_master.py` prepares authoritative BSE contract reference files
+by downloading them from official BSE endpoints, extracting them, and normalizing
+their filenames for downstream consumption.  
+Its behavior is highly dependent on BSE publication timing and file naming conventions,
+and it plays a critical role in ensuring reliable BSE instrument reference data
+for the entire BOD workflow.
+
+## 📄 Script Deep Dive: download_contract_master.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`download_contract_master.py` is a **core reference-data ingestion script**
+responsible for downloading the **NSE Contract Master files** required for
+instrument definition, validation, and downstream market-data processing.
+
+Its primary responsibilities are:
+- Authenticate with NSE’s secure extranet API
+- Download **compressed contract master files**
+- Decompress and normalize them into usable text files
+- Store raw compressed data in Redis for fast access and audit
+
+This script is **foundational** for any system that relies on:
+- Instrument master data
+- Contract definitions
+- Symbol–token–expiry mappings
+
+> 🔒 If this script fails, **instrument-related processing must not proceed**.
+
+---
+
+### 2️⃣ Authoritative Data Source (From Where the Files Are Downloaded)
+
+This script downloads data from **NSE’s official secure extranet APIs**.
+
+**Provided by:**  
+:contentReference[oaicite:1]{index=1}
+
+---
+
+#### 2.1 Base API Endpoints
+Base URL : [https://www.connect2nse.com/extranet-api](https://www.connect2nse.com/extranet-api)
+
+```Login API : /login/2.0
+File Download API : /common/file/download/2.0
+
+
+```
+
+
+These endpoints are **authenticated**, **member-restricted**, and **not public**.
+
+---
+
+#### 2.2 Files Downloaded
+
+The script downloads the following **compressed reference files**:
+
+| File Name | Segment | Folder Path | Description |
+|---------|--------|------------|-------------|
+| `security.gz` | CM | `/ntneat` | Security master data |
+| `contract.gz` | CM | `/ntneat` | Contract master data |
+
+Both files are published and maintained by NSE and represent the
+**authoritative contract definitions**.
+
+---
+
+### 3️⃣ Authentication Model (Critical Dependency)
+
+Before any download, the script performs an **authenticated login**.
+
+**Login API:**
+POST [https://www.connect2nse.com/extranet-api/login/2.0](https://www.connect2nse.com/extranet-api/login/2.0)
+**Required credentials:**
+- `memberCode`
+- `loginId`
+- `encryptedPassword`
+
+On successful login:
+- NSE returns a **Bearer token**
+- The token is stored in memory and used for all download requests
+
+If authentication fails:
+- No file download is attempted
+- Script exits immediately
+
+### 4️⃣ Execution Context
+
+The script is implemented as a **standalone CLI utility** and is executed:
+
+- Automatically via `process_master.py` during BOD
+- Manually for validation, re-runs, or recovery
+
+The script performs:
+- Secure network calls
+- File system writes
+- GZIP decompression
+- Redis writes
+
+Because of this, it is considered a **high-impact infrastructure script**.
+
+
+## 1.4 First Step: Writing a New File-Parsing Script
 
 If you want to parse a **new file** as part of BOD, follow these steps.
 
@@ -362,6 +761,92 @@ Every script inside `utils/` must follow these responsibilities:
 - Script must fail clearly if the file is missing or invalid
 
 
+### 6️⃣ Input Contract (CLI Arguments)
+
+| Argument | Required | Description |
+|------|--------|-------------|
+| `--member_code` | ✅ | NSE member code |
+| `--login_id` | ✅ | NSE login ID |
+| `--encrypted_password` | ✅ | Encrypted NSE password |
+| `--download_folder` | ❌ | Output folder (default: `downloads`) |
+
+Missing any required argument causes **immediate script termination**.
+
+`download_contract_master.py` securely downloads and prepares the NSE contract
+and security master files using authenticated extranet APIs.
+It enforces strict authentication, retry, and decompression logic while also
+caching raw compressed data in Redis for performance and audit purposes.
+The script is a critical dependency for all instrument-driven BOD processes
+and must execute successfully for a valid trading day setup.
+
+---
+
+
+## 📄 Script Deep Dive: download_nse_most_active_scripts.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`download_nse_most_active_scripts.py` is a **real-time market snapshot ingestion script**
+used to fetch **NSE “Most Active / Gainers” market data** and store it in Redis for
+fast, in-memory consumption.
+
+Its primary objective is to:
+- Download live market CSV data from NSE APIs
+- Store the raw CSV response in Redis
+- Make the data instantly available for UI, analytics, or monitoring use cases
+
+This script is **read-only with respect to NSE data** and **write-only with respect to Redis**.
+
+> 🔒 This script does **not** modify databases  
+> 🔒 It acts as a lightweight data feeder for real-time views
+
+---
+
+### 2️⃣ Authoritative Data Source (From Where the Data Is Downloaded)
+
+The script fetches CSV data from an **official NSE public API endpoint**.
+
+**Primary API Endpoint:**
+[https://www.nseindia.com/api/live-analysis-variations?index=gainers&type=NIFTY&csv=true](https://www.nseindia.com/api/live-analysis-variations?index=gainers&type=NIFTY&csv=true)
+
+yaml
+Copy code
+
+**Provided by:**  
+:contentReference[oaicite:1]{index=1}
+
+---
+
+#### 📌 Nature of the Data
+
+- Format: CSV
+- Data Type: Live / near-real-time market snapshot
+- Segment: Equity (NIFTY index gainers)
+- Update Frequency: Intraday (frequently updated by NSE)
+
+⚠️ This data is **not end-of-day (EOD)** data and should not be treated as historical truth.
+
+---
+
+### 3️⃣ Execution Context
+
+The script is implemented as a **standalone command-line utility** and can be executed:
+
+- Automatically as part of auxiliary BOD/EOD or intraday jobs
+- Manually for cache refresh or troubleshooting
+
+The script performs:
+- One HTTP GET request to NSE
+- One Redis `SET` operation
+
+It is intentionally **stateless and lightweight**.
+
+
+### 4️⃣ Runtime Dependencies (Actual & Enforced)
+- NSE public API must be reachable:
+[https://www.nseindia.com](https://www.nseindia.com)
 
 
 
