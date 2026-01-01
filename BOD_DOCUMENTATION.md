@@ -1293,32 +1293,577 @@ This file must contain a key:
 
 ```
 
-3️⃣ Execution Context
+### Rules Enforced by the Script
 
-**The script runs as a background monitoring thread.**
+The monitoring script applies **strict configuration validation rules** to ensure reliability and consistency.
 
-Execution characteristics:
+### Mandatory Fields
+- **title** → Required  
+- **process** → Required  
 
-  -Uses threading.Thread
+If **either field is missing or invalid**, the script will:
+- Log the configuration error
+- **Terminate immediately**
+- Skip further monitoring cycles
 
-  -Runs in a continuous loop
+### Configuration Authority
+- `Processes.json` acts as the **single source of truth**
+- Only processes explicitly defined in `Processes.json` are monitored
+- No hardcoded or implicit processes are allowed
 
-  -Sleeps for 5 seconds between monitoring cycles
+This design ensures:
+- Predictable behavior
+- Controlled monitoring scope
+- No accidental or unauthorized process tracking
 
-  -Starts and stops via:
+---
 
-  -start_monitoring()
+## 3️⃣ Execution Context
 
-  -stop_monitoring()
+The script operates as a **background monitoring thread**.
 
-  -It is intended to run:
+### Execution Characteristics
+- Implemented using `threading.Thread`
+- Runs in a **continuous loop**
+- Sleeps for **5 seconds** between each monitoring cycle
+- Designed for long-running execution
 
-  -Alongside the Process Manager
+### Lifecycle Control
+The monitoring thread is controlled using two methods:
 
-  -As a long-running service compone
+- `start_monitoring()` → Starts the background monitoring loop
+- `stop_monitoring()` → Gracefully stops the monitoring thread
+
+### Intended Usage
+The script is designed to run:
+- Alongside the **Process Manager**
+- As a **long-running service component**
+- Without blocking the main application flow
+
+---
+
+## 4️⃣ What Is Actually Monitored
+
+The script monitors **two execution environments**.  
+This section describes the first one.
+
+---
+
+## 4.1 OS-Level Processes
+
+The script monitors operating system–level processes using the **psutil** library.
+
+### Metrics Collected
+For each matched process, the following information is collected:
+
+- **Process ID (PID)**
+- **CPU usage (%)**
+- **Memory usage (%)**
+- **Disk I/O** (read + write bytes)
+- **Process start time**
+- **Process status** (running, sleeping, etc.)
+
+### Process Matching Logic
+- Uses **exact process name matching**
+- Only processes whose names exactly match the `process` field in `Processes.json` are tracked
+- Partial or fuzzy matching is **not supported**
+
+This strict matching ensures:
+- Accurate monitoring
+- No false positives
+- Clear correlation between configuration and runtime behavior
+
+ 
+
+
+### 🔚 Summary
+
+`process_monitor.py` provides continuous visibility into the health and
+resource usage of critical system processes and Docker containers.
+By persisting metrics in Redis and sending alerts on failures, it helps
+prevent silent outages and enables proactive operational response.
+
+Because the script depends on operating system access, Docker availability,
+Redis connectivity, and SMTP infrastructure, it must run continuously and
+be monitored itself to ensure ongoing effectiveness.
+
+
+## 📄 Script Deep Dive: redis_cache_backup_and_deletion.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`redis_cache_backup_and_deletion.py` is a **maintenance and data-safety utility script**
+designed to **safely back up Redis cache data and then delete selected keys**.
+It is primarily used during **BOD/EOD cleanup**, environment resets, or
+controlled cache invalidation operations.
+
+Its main goals are to:
+- Create a **recoverable backup** of Redis keys before deletion
+- Safely delete Redis keys matching a given pattern
+- Optionally delete a Redis configuration file (**high-risk operation**)
+
+> ⚠️ This script performs **destructive operations**.  
+> Incorrect usage can result in **permanent data loss**.
+
+---
+
+### 2️⃣ Scope of Operations
+
+The script performs **three distinct operations**, in strict sequence:
+
+1. **Backup Redis keys** to a JSON file  
+2. **Delete Redis keys** matching a pattern  
+3. *(Optional)* Delete a Redis configuration file from disk  
+
+If the backup step fails, **no deletion is performed**.
+
+---
+
+### 3️⃣ Execution Context
+
+The script is implemented as a **standalone CLI utility** and is executed:
+
+- Manually by operations or engineering teams
+- As part of controlled BOD/EOD cleanup procedures
+- During environment resets or recovery workflows
+
+It is **not designed to run automatically on a schedule**
+without human oversight.
+
+---
+
+### 4️⃣ Redis as the Primary Dependency
+
+All operations revolve around  
+:contentReference[oaicite:1]{index=1}
+
+Redis is used as:
+- A cache store
+- A temporary persistence layer
+- A time-series metrics store (in other scripts)
+
+This script directly manipulates Redis keys and values.
+
+---
+
+### 5️⃣ Input Contract (CLI Arguments)
+
+| Argument | Required | Description |
+|--------|----------|-------------|
+| `--host` | ❌ | Redis host (default: localhost) |
+| `--port` | ❌ | Redis port (default: 6379) |
+| `--password` | ❌ | Redis password (optional) |
+| `--key_pattern` | ✅ | Redis key pattern to backup & delete |
+| `--backup_file` | ❌ | Backup file name (auto-generated if omitted) |
+| `--delete_config_path` | ❌ | Path to Redis config file (**dangerous**) |
+
+---
+
+### 6️⃣ Backup Operation (Critical Safety Step)
+
+Before deleting any keys, the script **backs up Redis data**.
+
+#### 6.1 Key Discovery
+
+- Uses `SCAN` via `scan_iter`
+- Avoids blocking Redis
+- Supports wildcard patterns (e.g. `PROCESSES*`, `*`)
+
+---
+
+#### 6.2 Supported Redis Data Types
+
+The script explicitly supports:
+
+| Redis Type | Handling |
+|----------|----------|
+| `string` | Stored directly |
+| `hash` | Each field stored separately |
+| `list` | Full list preserved |
+| `set` | Full set preserved |
+| `zset` | Member + score preserved |
+
+Unsupported types are skipped safely.
+
+---
+
+#### 6.3 Binary-Safe Backup (Important)
+
+Redis values may contain **binary data**.
+
+The script:
+- Attempts UTF-8 decoding
+- If decoding fails → **Base64 encodes the value**
+- Stores a flag indicating Base64 encoding
+
+This guarantees:
+- No data corruption
+- Backup file remains valid JSON
+
+---
+
+#### 6.4 Backup File Details
+
+- Backup directory:  
+- Backup format: JSON
+- Default file name:
+
+redis_backup_YYYYMMDD_HHMMSS.json
+
+
+Each key entry includes:
+- Redis type
+- Value
+- Base64 flags (key/value)
+
+---
+
+
+### 🔚 Summary 
+
+`redis_cache_backup_and_deletion.py` is a high-impact operational utility
+used to back up and delete Redis cache data in a controlled manner.
+By supporting all common Redis data types and binary-safe backups,
+it provides a reliable safety net before destructive operations.
+However, because it can permanently delete cache data and configuration files,
+it must be executed deliberately, reviewed carefully, and monitored closely
+whenever used in BOD/EOD or recovery workflows.
+
+---
+
+## 📄 Script Deep Dive: store_adapter_info.py
+
+### 1️⃣ Purpose and Business Intent
+
+`store_adapter_info.py` is a **configuration ingestion and caching utility**
+responsible for reading **adapter configuration files (`*AdapterInfo.ini`)**,
+converting them into structured JSON, and storing them in  
+:contentReference[oaicite:1]{index=1} for fast, centralized access.
+
+Its primary objectives are to:
+- Standardize adapter configuration data
+- Eliminate repeated file-system reads by caching configs in Redis
+- Provide a **single source of truth** for adapter metadata at runtime
+
+This script is typically used during **BOD startup, environment initialization,
+or configuration refresh workflows**.
+
+> 🔒 If this script fails or adapter data is missing in Redis,  
+> downstream components relying on adapter configuration may fail to initialize.
+
+---
+
+### 2️⃣ What Data This Script Handles
+
+The script processes files with the naming pattern:
+
+*AdapterInfo.ini
+
+css
+Copy code
+
+Each INI file is expected to contain a mandatory section:
+
+```ini
+[AdapterInfo]
+adapterid = <UNIQUE_ADAPTER_ID>
+```
+
+### Adapter Identifier
+
+The `adapterid` is treated as the **primary identifier** for the adapter.
+It is used to construct the **Redis key** under which the adapter configuration
+is stored. This ensures that each adapter can be uniquely identified and
+retrieved at runtime.
+
+---
+
+### 3️⃣ Execution Context
+
+The script is implemented as a **standalone CLI utility** and can be executed in
+the following scenarios:
+
+- Manually by developers or operations teams  
+- As part of BOD or system initialization flows  
+- During configuration refresh or recovery procedures  
+
+#### Operations Performed
+
+- File system scanning to locate `*AdapterInfo.ini` files  
+- Conversion of INI configuration files into structured JSON  
+- Writing adapter configuration data into Redis  
+
+#### Operations Not Performed
+
+- No database modifications  
+- No deletion of existing Redis keys  
+- No validation beyond basic structural checks  
+
+---
+
+### 4️⃣ Input Contract (CLI Arguments)
+
+The script uses `argparse` and supports the following command-line arguments:
+
+| Argument        | Required | Description                                                     |
+|-----------------|----------|-----------------------------------------------------------------|
+| `--redis_host`  | ❌       | Redis host (default: `localhost`)                               |
+| `--redis_port`  | ❌       | Redis port (default: `6379`)                                    |
+| `--redis_db`    | ❌       | Redis database index (default: `0`)                             |
+| `--directory`   | ❌       | Directory containing `*AdapterInfo.ini` files (default: `adapter_configs`) |
+
+All arguments have **safe default values** and can be explicitly overridden
+based on the execution environment.
+
+### INI to JSON Conversion Logic
+
+The script uses `configparser` to read INI configuration files and convert them
+into structured JSON format for storage and runtime usage.
+
+#### Conversion Rules
+
+- Each INI section is converted into a corresponding JSON object  
+- Each key-value pair is preserved exactly as a **string**  
+- No automatic type casting (integer, boolean, etc.) is performed  
+- Comments and the original ordering present in the INI file are **not preserved**
+
+#### Example Transformation
+
+**INI Format:**
+```ini
+[AdapterInfo]
+adapterid = ABC123
+name = SampleAdapter
+```
+
+Converted JSON Output:
+
+{
+  "AdapterInfo": {
+    "adapterid": "ABC123",
+    "name": "SampleAdapter"
+  }
+}
+
+### 🔚 Summary
+
+`store_adapter_info.py` standardizes adapter configuration management by
+converting INI-based adapter definitions into structured JSON and caching them
+in Redis using a consistent, adapter-centric key scheme.
+
+The script is lightweight in execution but **critical for systems that depend
+on adapter metadata at runtime**. It ensures fast, centralized access to adapter
+configuration without repeated file-system reads.
+
+Because the script relies on **Redis availability** and **correct INI file
+structure**, it should be executed during controlled system initialization
+phases and its successful execution should be verified as part of **BOD health
+checks**.
 
 
 
+## 📄 Script: upload_cash_margin_db.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`upload_cash_margin_db.py` is a **BOD data update script** responsible for
+updating **CashMargin values** for RMS entities in the database based on an
+external cash margin file.
+
+Its primary objective is to:
+- Parse a client-wise cash margin file (multiple formats supported)
+- Normalize RMS entity codes
+- Update the `CashMargin` column in the `RMSEntities` table
+
+> 🔒 Incorrect execution can directly impact **risk limits and margin validation**.
+
+---
+
+### 2️⃣ Input Data (Source & Format)
+
+The script accepts a **single input file** that may be in one of the following formats:
+
+#### 2.1 Pipe-Separated (No Header)
+CLIENTCODE|100000
+CLIENTABC|250000
+
+yaml
+Copy code
+
+#### 2.2 Header-Based (CSV)
+Columns are auto-detected using keyword matching:
+- Client column → contains `client`
+- Cash margin column → contains `cash`
+
+The script dynamically adapts based on the detected format.
+
+---
+
+### 3️⃣ Execution Context
+
+- Implemented as a **standalone CLI utility**
+- Typically executed during **BOD RMS setup**
+- Performs **file parsing + database updates**
+- Does not create or delete tables
+
+---
+
+### 4️⃣ Input Contract (CLI Arguments)
+
+| Argument | Required | Description |
+|--------|----------|-------------|
+| `--input_file` | ✅ | Cash margin input file |
+| `--db_host` | ✅ | Database host |
+| `--db_port` | ✅ | Database port |
+| `--db_user` | ✅ | Database user |
+| `--db_password` | ✅ | Database password |
+| `--db_name` | ✅ | Database name |
+
+---
+
+### 5️⃣ Dependencies
+- MySQL database must be reachable
+- User must have `UPDATE` permission on `RMSEntities`
+- Input file must exist and be readable
+
+### 🔚 Summary (Manager / Operations View)
+
+`upload_cash_margin_db.py` ensures that client-level cash margins are accurately
+reflected in the RMS database at the start of the trading day. Its correctness
+is critical for risk checks, margin validation, and order acceptance.
+Because it directly updates financial risk parameters, it must be executed
+carefully and verified as part of BOD RMS health checks.
+
+---
+
+## 📄 Script Deep Dive: upolad_holding_position_db.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`upolad_holding_position_db.py` is a **BOD holdings ingestion script**
+responsible for loading **client holding positions** into the database
+by merging holding data with the instrument master.
+
+Its primary objective is to:
+- Parse client holding files in multiple formats
+- Enrich holdings with instrument metadata
+- Insert or update holdings into the `Holdings` table
+
+> 🔒 Incorrect holdings data directly impacts **portfolio view, PnL, and risk calculations**.
+
+---
+
+### 2️⃣ Input Data Sources
+
+#### 2.1 Holding File
+Supported formats:
+- CSV
+- Excel (`.xls`, `.xlsx`)
+- Pipe-separated text (no header)
+
+Detected fields:
+- UserID
+- ISIN
+- Quantity
+- Buy Average Price
+
+---
+
+#### 2.2 Instrument Master File
+
+- CSV format
+- Required columns:
+  - `ISIN`
+  - `Symbol`
+  - `Ticker`
+
+Used to enrich holdings with:
+- InstrumentName
+- Ticker
+
+---
+
+### 3️⃣ Execution Context
+
+- Standalone CLI utility
+- Executed during **BOD position setup**
+- Performs **table creation + upsert**
+- Safe to run repeatedly
+
+---
+
+### 4️⃣ Input Contract (CLI Arguments)
+
+| Argument | Required | Description |
+|--------|----------|-------------|
+| `--holding_file` | ✅ | Client holding file |
+| `--instrument_file` | ✅ | Instrument master CSV |
+| `--db_host` | ✅ | Database host |
+| `--db_port` | ✅ | Database port |
+| `--db_user` | ✅ | Database user |
+| `--db_password` | ✅ | Database password |
+| `--db_name` | ✅ | Database name |
+
+---
+
+### 5️⃣ Execution Flow (Step-by-Step)
+
+1. Validate input files
+2. Load holding file (format auto-detected)
+3. Normalize holding columns
+4. Load instrument master
+5. Merge holdings with instrument data using ISIN
+6. Create `Holdings` table if missing
+7. Perform `INSERT ... ON DUPLICATE KEY UPDATE`
+8. Log total processed rows
+
+---
+
+### 6️⃣ Database Schema
+
+```sql
+Holdings (
+  UserID VARCHAR(50),
+  ISIN VARCHAR(20),
+  InstrumentName VARCHAR(100),
+  Ticker VARCHAR(50),
+  Quantity DOUBLE,
+  BuyAvgPrice DOUBLE,
+  PRIMARY KEY (UserID, ISIN)
+)
+```
+
+### 7️⃣ Genuine Runtime Dependencies
+
+#### 7.1 File System Dependency
+
+- The **holding file** must exist at the specified path and be readable  
+- The **instrument master file** must exist and contain valid data  
+- Both files must be accessible at runtime; missing or unreadable files
+  will cause the script to terminate before any database operation is performed  
+
+---
+
+### 🔚 Summary (Manager / Operations View)
+
+`upolad_holding_position_db.py` ensures that client holding positions are
+accurately loaded and enriched at the start of the trading day.
+By merging holdings with the instrument master and applying **idempotent upsert
+logic**, the script provides a reliable and repeatable foundation for
+portfolio valuation, PnL computation, and risk assessment.
+
+Because holdings data directly influences downstream trading and risk systems,
+the successful execution of this script is **mandatory** to establish a
+consistent and correct BOD state.
+
+
+---
 
 ## 1.4 Registering the New Script in `process.json` 
 
