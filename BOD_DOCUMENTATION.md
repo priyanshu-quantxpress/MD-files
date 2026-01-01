@@ -710,6 +710,37 @@ The script performs:
 
 Because of this, it is considered a **high-impact infrastructure script**.
 
+### 4️⃣ Dependencies (Critical, Genuine & Enforced)
+
+`download_nse_most_active_scripts.py` is a **network- and cache-dependent script**.
+It has no database dependency, but it is **highly sensitive to external services**.
+Any failure in these dependencies directly impacts real-time data availability.
+
+---
+
+#### 4.1 NSE Public API Dependency (Primary Dependency)
+
+The script depends entirely on the availability of the NSE public API endpoint:
+
+[https://www.nseindia.com/api/live-analysis-variations](https://www.nseindia.com/api/live-analysis-variations)
+
+Provided by:  
+:contentReference[oaicite:0]{index=0}
+
+This dependency has multiple implicit constraints:
+
+- NSE must allow access from the host IP
+- The API must be publicly reachable (no maintenance / outage)
+- The API must return data in CSV format
+- The API response structure must remain stable
+
+If NSE:
+- blocks the IP  
+- changes the API path  
+- removes CSV support  
+
+then the script **cannot function**, regardless of internal correctness.
+
 
 ## 1.4 First Step: Writing a New File-Parsing Script
 
@@ -847,6 +878,444 @@ It is intentionally **stateless and lightweight**.
 ### 4️⃣ Runtime Dependencies (Actual & Enforced)
 - NSE public API must be reachable:
 [https://www.nseindia.com](https://www.nseindia.com)
+
+
+#### 4.2 HTTP Header Dependency (Anti-Bot Enforcement)
+
+NSE applies **anti-bot and traffic filtering rules**.
+
+The script explicitly depends on:
+- A valid `User-Agent` HTTP header
+
+Without this:
+- NSE responds with **HTTP 403 Forbidden**
+- The request is rejected even though the endpoint is public
+
+#### 4.3 Data Freshness Dependency (Time-Sensitive)
+
+This script does **not validate timestamps** inside the CSV.
+
+It implicitly assumes:
+- NSE is serving **current intraday data**
+- Redis overwrite equals data refresh
+
+If the script does not run:
+- Redis retains old data
+- No automatic expiry or TTL is enforced
+
+Operationally, this creates a dependency on:
+- Proper scheduling
+- Regular execution frequency
+
+---
+### 🔍 Dependency Risk Summary 
+
+This script’s reliability depends more on **external systems** than internal logic:
+
+- NSE availability & access rules
+- Network stability
+- Redis uptime
+- Scheduled execution discipline
+
+It is intentionally lightweight but **operationally sensitive**.
+Failures do not block BOD, but they directly impact **real-time visibility** and
+user-facing dashboards.
+
+---
+
+
+
+## 📄 Script : ftp_downloader.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`ftp_downloader.py` is a **generic file-ingestion utility script** designed to
+download a **single file from a remote FTP server** and store it at a specified
+local location.
+
+Its primary responsibility is to:
+- Establish a secure session with an FTP server
+- Authenticate using provided credentials
+- Download a specified remote file in binary-safe mode
+- Persist the file locally for downstream BOD/EOD processing
+
+This script is intentionally **generic and reusable** and does not contain
+any exchange-specific or business-specific logic.
+
+---
+
+### 2️⃣ Execution Context
+
+The script is implemented as a **standalone command-line utility** and is executed:
+
+- As part of BOD/EOD workflows where data is delivered via FTP
+- Manually by operations teams for recovery or ad-hoc downloads
+
+The script performs:
+- Network I/O (FTP protocol)
+- File system writes
+
+It does **not**:
+- Modify databases
+- Use Redis
+- Depend on other BOD scripts
+
+---
+
+### 3️⃣  Runtime Dependencies (Critical Focus)
+
+This script is **entirely dependency-driven**.
+Its success depends more on **external infrastructure** than on internal logic.
+
+---
+
+#### 3.1 FTP Server Dependency (Primary Dependency)
+
+The script depends on the availability and behavior of an **external FTP server**.
+
+Required conditions:
+- FTP server must be reachable on the network
+- FTP service must be running
+- FTP server must support standard `RETR` command
+- Remote file path must exist exactly as provided
+
+If the FTP server:
+- is down
+- rejects connections
+- changes directory structure
+- removes the file
+
+the script **cannot recover or retry automatically**.
+
+---
+
+#### 3.2 FTP Authentication Dependency
+
+The script uses **username + password authentication**.
+
+Hard requirements:
+- Credentials must be valid
+- User must have permission to:
+  - access the remote directory
+  - retrieve the specified file
+
+If authentication fails:
+- FTP login is rejected
+- Script exits without downloading the file
+
+No anonymous or key-based authentication is supported.
+
+---
+
+
+#### 3.3 File System Dependencies
+
+Local file system requirements:
+- Write permission on the target directory
+- Ability to create directories recursively
+- Sufficient disk space for the downloaded file
+
+Behavior enforced by code:
+- Parent directory is auto-created if missing
+- Script exits immediately if directory creation fails
+
+If disk space is exhausted or permissions are missing:
+- File write fails
+- Download is aborted
+
+---
+### 4️⃣ Input Contract (CLI Arguments)
+
+The script enforces **explicit input parameters**.
+
+| Argument | Required | Description |
+|------|--------|-------------|
+| `--host` | ✅ | FTP server hostname or IP |
+| `--user` | ✅ | FTP username |
+| `--password` | ✅ | FTP password |
+| `--remote-file` | ✅ | Absolute path of remote file |
+| `--local-file` | ✅ | Absolute path for local save |
+
+Missing any argument results in **immediate termination**.
+
+
+### 5️⃣ Edge Cases and Failure Scenarios
+
+#### 5.1 Remote File Does Not Exist
+- FTP server returns error
+- Script logs FTP error
+- No local file is created
+
+---
+
+#### 5.2 Partial Download / Connection Drop
+- FTP session terminates mid-transfer
+- Local file may be incomplete
+- No checksum or validation is performed
+
+Operational cleanup may be required.
+
+---
+
+
+
+#### 5.3 Incorrect Local Path
+- Directory creation fails
+- Script exits immediately using `sys.exit(1)`
+
+---
+
+#### 5.4 Invalid Credentials
+- Login fails
+- Script exits before file transfer begins
+
+---
+### 🔚 Summary 
+
+`ftp_downloader.py` is a lightweight file-ingestion utility whose successful
+execution is **highly dependent on external systems rather than internal logic**.
+Its reliability is primarily governed by:
+
+- Availability and responsiveness of the remote FTP server  
+- Validity and permissions of the provided FTP credentials  
+- Stability of the underlying network connection  
+- Write access and available space on the local file system  
+
+The script intentionally avoids advanced mechanisms such as retries, resume
+support, or file validation in order to keep its behavior **simple, predictable,
+and transparent**.
+
+Because of this design choice, the script requires **active operational monitoring**
+when used in automated BOD/EOD workflows to ensure that external dependencies
+are healthy and that any failures are detected and addressed promptly.
+
+## 📄 Script Deep Dive: nse_span_downloader.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`nse_span_downloader.py` is a **risk-critical reference data ingestion script**
+responsible for downloading **NSE SPAN margin files** and preparing them for
+downstream margin calculation and risk-management processes.
+
+SPAN (Standard Portfolio Analysis of Risk) files are used to:
+- Calculate margin requirements
+- Evaluate portfolio risk
+- Enforce exchange-mandated risk controls
+
+> 🔒 If this script fails or consumes incorrect data,  
+> **margin calculations may be wrong**, leading to serious risk exposure.
+
+---
+
+### 2️⃣ Authoritative Data Source (From Where the Files Are Downloaded)
+
+All SPAN files are downloaded **directly from NSE’s official archive**.
+
+**Primary source domain:**
+https://nsearchives.nseindia.com
+
+css
+Copy code
+
+**SPAN directory:**
+[https://nsearchives.nseindia.com/archives/nsccl/span/](https://nsearchives.nseindia.com/archives/nsccl/span/)
+
+
+
+**Published by:**  
+:contentReference[oaicite:0]{index=0}
+
+---
+
+#### 2.1 SPAN File Naming Convention
+
+For a given trading date (`YYYYMMDD`), the script attempts to download files
+in the following **priority order**:
+```
+nsccl.YYYYMMDD.i5.zip
+nsccl.YYYYMMDD.i4.zip
+nsccl.YYYYMMDD.i3.zip
+nsccl.YYYYMMDD.i2.zip
+nsccl.YYYYMMDD.i1.zip
+nsccl.YYYYMMDD.s.zip
+```
+
+
+Meaning:
+- `i1`–`i5` → Intraday SPAN snapshots
+- `s` → Final settlement SPAN file
+
+The script **stops at the first successfully downloaded file**.
+
+---
+
+### 3️⃣ Execution Context
+
+The script is implemented as a **standalone CLI utility** and is executed:
+
+- Automatically as part of the BOD / pre-risk setup
+- Manually by operations teams when SPAN publication is delayed
+
+The script performs:
+- External HTTP downloads
+- ZIP validation and extraction
+- File renaming and normalization
+
+It does **not**:
+- Write to the database
+- Write to Redis
+- Perform margin calculations itself
+
+---
+
+### 4️⃣ Input Contract (CLI Arguments)
+
+| Argument | Required | Description |
+|------|--------|-------------|
+| `--date` | ❌ | Trading date in `YYYYMMDD` format (defaults to current date) |
+| `--output-dir` | ❌ | Local directory to store SPAN files (default: `downloads/`) |
+
+If no date is provided, the script assumes **current system date**.
+
+### 5️⃣ Genuine Runtime Dependencies (Critical & Enforced)
+
+This script is **heavily dependent on external systems**.
+
+---
+
+#### 5.1 NSE Archive Availability (Primary Dependency)
+
+- NSE archive must be reachable
+- SPAN files must be published for the given date
+- File naming conventions must remain unchanged
+
+If NSE:
+- delays publication
+- skips intraday snapshots
+- changes filenames  
+
+the script **cannot recover automatically**.
+
+---
+
+#### 5.2 NSE Publication Timing Dependency
+
+SPAN files are **time-sensitive**.
+
+Operational realities:
+- Intraday files (`i*`) may not exist on holidays
+- Settlement file (`s`) may be delayed
+- Early execution can result in HTTP 404
+
+Correct scheduling is **mandatory**.
+
+---
+
+#### 5.3 File System Dependencies
+
+Local requirements:
+- Write permission in output directory
+- Sufficient disk space
+- Ability to extract ZIP archives
+
+Failure in any step results in script termination.
+
+---
+
+#### 5.4 ZIP Structure Dependency
+
+The script assumes:
+- ZIP contains at least one file
+- The first file is the SPAN data file
+
+Any structural change in ZIP content may break extraction logic.
+
+---
+
+
+### 🔚 Summary (Manager / Risk View)
+
+`nse_span_downloader.py` ingests official NSE-published SPAN margin files
+and prepares them for downstream risk and margin systems.
+Its execution is highly sensitive to NSE publication timing, archive availability,
+and network stability.  
+Because SPAN data directly affects margin computation, this script is
+**risk-critical** and must be scheduled, monitored, and validated carefully
+during every BOD cycle.
+
+---
+
+
+## 📄 Script Deep Dive: process_monitor.py
+
+---
+
+### 1️⃣ Purpose and Business Intent
+
+`process_monitor.py` is a **continuous runtime monitoring and alerting script**
+responsible for tracking the health and resource usage of **critical system
+processes and Docker containers** defined in a configuration file.
+
+Its primary objectives are to:
+- Monitor whether critical processes are **running or stopped**
+- Capture **CPU, memory, disk I/O, PID, and start time**
+- Persist time-series process metrics into **Redis**
+- Trigger **email alerts** when a monitored process is not running
+
+This script is designed to run **continuously in the background**
+and acts as an **operational safety net** for BOD/EOD and long-running services.
+
+> 🔒 If this script is not running,  
+> **process failures may go undetected**, leading to silent system outages.
+
+---
+
+### 2️⃣ What Processes Are Monitored (Source of Truth)
+
+The list of processes to monitor is defined in:
+
+**Processes.json**
+
+
+This file must contain a key:
+
+```json
+"process_monitor": [
+  {
+    "title": "Readable Name",
+    "process": "actual_process_or_container_name"
+  }
+]
+
+```
+
+3️⃣ Execution Context
+
+**The script runs as a background monitoring thread.**
+
+Execution characteristics:
+
+  -Uses threading.Thread
+
+  -Runs in a continuous loop
+
+  -Sleeps for 5 seconds between monitoring cycles
+
+  -Starts and stops via:
+
+  -start_monitoring()
+
+  -stop_monitoring()
+
+  -It is intended to run:
+
+  -Alongside the Process Manager
+
+  -As a long-running service compone
 
 
 
